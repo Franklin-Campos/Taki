@@ -1,5 +1,5 @@
 // src/components/VideoInfo.jsx
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 
@@ -19,110 +19,79 @@ const formatDuration = (seconds) => {
 
 const VideoInfo = ({ video, onDownload, onAddToHistory }) => {
   const [downloading, setDownloading] = useState(null);
-  const [progress, setProgress] = useState(0);
-  const [progressText, setProgressText] = useState('');
+  const [isDownloading, setIsDownloading] = useState(false);
+  const [elapsedTime, setElapsedTime] = useState(0);
 
   if (!video) return null;
 
-  const handleDownload = async (format) => {
-    setDownloading(format.quality);
-    setProgress(0);
-    setProgressText('Iniciando descarga...');
-    
-    try {
-      console.log("🔽 Descargando:", format.quality);
-      
-      // Usar fetch con reporte de progreso
-      const response = await fetch(`${API_URL}/api/download`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url: format.url })
-      });
-      
-      if (!response.ok) {
-        throw new Error(`Error ${response.status}`);
-      }
-      
-      // Obtener el tamaño total del archivo
-      const contentLength = response.headers.get('content-length');
-      const total = parseInt(contentLength, 10);
-      
-      // Usar Response.body para leer el stream con progreso
-      const reader = response.body.getReader();
-      const chunks = [];
-      let received = 0;
-      
-      setProgressText('Descargando archivo...');
-      
-      while (true) {
-        const { done, value } = await reader.read();
-        
-        if (done) break;
-        
-        chunks.push(value);
-        received += value.length;
-        
-        if (total) {
-          const percent = (received / total) * 100;
-          setProgress(Math.round(percent));
-          setProgressText(`Descargando: ${Math.round(percent)}% (${formatFileSize(received)} / ${formatFileSize(total)})`);
-        } else {
-          setProgressText(`Descargando: ${formatFileSize(received)}`);
-        }
-      }
-      
-      // Combinar todos los chunks en un solo blob
-      const blob = new Blob(chunks);
-      const blobUrl = window.URL.createObjectURL(blob);
-      
-      setProgressText('Guardando archivo...');
-      setProgress(100);
-      
-      // Crear enlace de descarga
-      const link = document.createElement('a');
-      link.href = blobUrl;
-      const extension = format.ext || (format.quality === 'audio' ? 'mp3' : 'mp4');
-      const cleanTitle = video.title.replace(/[<>:"/\\|?*]+/g, '');
-      link.download = `${cleanTitle}.${extension}`;
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      
-      // Limpiar
-      window.URL.revokeObjectURL(blobUrl);
-      
-      console.log("✅ Descarga completada");
-      
-      // Agregar al historial
-      if (onAddToHistory) {
-        onAddToHistory({
-          title: video.title,
-          url: video.url,
-          thumbnail: video.thumbnail
-        });
-      }
-      
-      if (onDownload) {
-        onDownload(format.quality);
-      }
-      
-      // Limpiar progreso después de 2 segundos
-      setTimeout(() => {
-        setProgress(0);
-        setProgressText('');
-      }, 2000);
-      
-    } catch (error) {
-      console.error('❌ Error:', error);
-      setProgressText(`Error: ${error.message}`);
-      setTimeout(() => {
-        setProgressText('');
-        setProgress(0);
-      }, 3000);
-      alert('Error al descargar. Intenta con otra calidad.');
-    } finally {
-      setDownloading(null);
+  // Timer para mostrar tiempo transcurrido
+  useEffect(() => {
+    let interval;
+    if (isDownloading) {
+      interval = setInterval(() => {
+        setElapsedTime(prev => prev + 1);
+      }, 1000);
+    } else {
+      setElapsedTime(0);
     }
+    return () => clearInterval(interval);
+  }, [isDownloading]);
+
+  const formatTime = (seconds) => {
+    const mins = Math.floor(seconds / 60);
+    const secs = seconds % 60;
+    if (mins > 0) return `${mins} min ${secs} seg`;
+    return `${secs} seg`;
+  };
+
+  const handleDownload = (format) => {
+    setDownloading(format.quality);
+    setIsDownloading(true);
+    setElapsedTime(0);
+    
+    const extension = format.ext || (format.quality === 'audio' ? 'mp3' : 'mp4');
+    const cleanTitle = video.title.replace(/[<>:"/\\|?*]+/g, '');
+    
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', `${API_URL}/api/download`, true);
+    xhr.setRequestHeader('Content-Type', 'application/json');
+    xhr.responseType = 'blob';
+    
+    xhr.onload = () => {
+      if (xhr.status === 200) {
+        const blob = xhr.response;
+        const blobUrl = window.URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = blobUrl;
+        link.download = `${cleanTitle}.${extension}`;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        window.URL.revokeObjectURL(blobUrl);
+        
+        if (onAddToHistory) {
+          onAddToHistory({
+            title: video.title,
+            url: video.url,
+            thumbnail: video.thumbnail
+          });
+        }
+        
+        if (onDownload) onDownload(format.quality);
+      } else {
+        alert('Error al descargar el archivo');
+      }
+      setDownloading(null);
+      setIsDownloading(false);
+    };
+    
+    xhr.onerror = () => {
+      alert('Error de conexión al servidor');
+      setDownloading(null);
+      setIsDownloading(false);
+    };
+    
+    xhr.send(JSON.stringify({ url: format.url }));
   };
 
   return (
@@ -140,18 +109,17 @@ const VideoInfo = ({ video, onDownload, onAddToHistory }) => {
         </div>
       </div>
 
-      {/* Barra de progreso */}
-      {progressText && (
+      {/* Barra de progreso indeterminada (animación continua) */}
+      {isDownloading && (
         <div className="progress-container">
-          <div className="progress-bar-wrapper">
-            <div 
-              className="progress-bar-fill" 
-              style={{ width: `${progress}%` }}
-            >
-              {progress > 0 && `${progress}%`}
-            </div>
+          <div className="progress-bar-indeterminate">
+            <div className="progress-bar-indeterminate-fill"></div>
           </div>
-          <p className="progress-text">{progressText}</p>
+          <div className="progress-info">
+            <span className="progress-text">⬇️ Descargando {downloading}...</span>
+            <span className="progress-time">⏱️ {formatTime(elapsedTime)}</span>
+          </div>
+          <p className="progress-hint">La descarga puede tomar unos segundos dependiendo del tamaño del archivo</p>
         </div>
       )}
 
@@ -162,10 +130,10 @@ const VideoInfo = ({ video, onDownload, onAddToHistory }) => {
             <button
               key={index}
               onClick={() => handleDownload(format)}
-              disabled={downloading === format.quality}
+              disabled={isDownloading}
               className="format-btn"
             >
-              {downloading === format.quality ? (
+              {isDownloading ? (
                 'Descargando...'
               ) : (
                 <>

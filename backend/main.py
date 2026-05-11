@@ -8,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Optional
 import re
+import yt_dlp
 from utils.validators import validate_youtube_url
 from utils.youtube import YouTubeExtractor
 
@@ -190,12 +191,12 @@ async def batch_download(request: BatchVideoRequest):
     
     return {'results': results}
 
-# ==================== ENDPOINT PARA DESCARGAR ====================
+# ==================== ENDPOINT PARA DESCARGAR (PROXY) ====================
 
 @app.post("/api/download")
 async def download_video(request: dict):
     """
-    Proxy para descargar videos usando POST con soporte para progreso.
+    Proxy para descargar videos. Recibe la URL y descarga el archivo.
     """
     try:
         url = request.get("url")
@@ -206,7 +207,7 @@ async def download_video(request: dict):
         
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-            "Accept": "video/webm,video/mp4,video/*;q=0.9,*/*;q=0.8",
+            "Accept": "*/*",
             "Accept-Language": "es-ES,es;q=0.8,en-US;q=0.5,en;q=0.3",
             "Connection": "keep-alive"
         }
@@ -229,7 +230,7 @@ async def download_video(request: dict):
             else:
                 filename = "download.mp4"
             
-            # Enviar el archivo con headers que incluyen el tamaño
+            # Enviar el archivo como streaming
             return StreamingResponse(
                 response.iter_bytes(chunk_size=8192),
                 media_type="application/octet-stream",
@@ -248,56 +249,59 @@ async def download_video(request: dict):
     except Exception as e:
         print(f"❌ Error: {e}")
         raise HTTPException(status_code=400, detail=str(e))
+
+# ==================== ENDPOINT PARA OBTENER URL DIRECTA ====================
+
+@app.post("/api/get-direct-url")
+async def get_direct_url(request: dict):
     """
-    Proxy para descargar videos usando POST.
+    Obtiene la URL directa del video sin descargarlo.
     """
     try:
         url = request.get("url")
         if not url:
             raise HTTPException(status_code=400, detail="URL no proporcionada")
         
-        print(f"📥 Descargando video...")
+        print(f"🔗 Obteniendo URL directa...")
         
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Accept": "video/webm,video/mp4,video/*;q=0.9,*/*;q=0.8",
-            "Accept-Language": "es-ES,es;q=0.8,en-US;q=0.5,en;q=0.3",
-            "Connection": "keep-alive"
+        ydl_opts = {
+            'quiet': True,
+            'no_warnings': True,
+            'extract_flat': False,
         }
         
-        async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as client:
-            response = await client.get(url, headers=headers)
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=False)
             
-            print(f"✅ Status: {response.status_code}")
-            print(f"✅ Tamaño: {len(response.content)} bytes")
+            best_format = None
+            best_height = 0
             
-            if response.status_code != 200:
-                raise Exception(f"Error HTTP {response.status_code}")
+            for f in info.get('formats', []):
+                if f.get('vcodec') != 'none' and f.get('acodec') != 'none':
+                    height = f.get('height', 0)
+                    if height > best_height:
+                        best_height = height
+                        best_format = f
             
-            # Determinar la extensión
-            content_type = response.headers.get('content-type', '')
-            if 'audio' in content_type:
-                filename = "audio.mp3"
-            elif 'video' in content_type:
-                filename = "video.mp4"
-            else:
-                filename = "download.mp4"
+            if not best_format:
+                for f in info.get('formats', []):
+                    if f.get('acodec') != 'none':
+                        best_format = f
+                        break
             
-            return StreamingResponse(
-                response.iter_bytes(chunk_size=8192),
-                media_type="application/octet-stream",
-                headers={
-                    "Content-Disposition": f"attachment; filename={filename}",
-                    "Cache-Control": "no-cache, no-store, must-revalidate",
-                    "Pragma": "no-cache",
-                    "Expires": "0",
-                    "Content-Length": str(len(response.content))
-                }
-            )
+            if not best_format or not best_format.get('url'):
+                raise Exception("No se encontró URL de descarga")
             
-    except httpx.TimeoutException:
-        print("❌ Timeout")
-        raise HTTPException(status_code=408, detail="La descarga tomó demasiado tiempo")
+            print(f"✅ URL obtenida: {best_format.get('height', 'audio')}p")
+            
+            return {
+                "success": True,
+                "url": best_format['url'],
+                "title": info.get('title', 'video'),
+                "ext": best_format.get('ext', 'mp4'),
+                "quality": best_format.get('height', 'audio')
+            }
+            
     except Exception as e:
         print(f"❌ Error: {e}")
         raise HTTPException(status_code=400, detail=str(e))
