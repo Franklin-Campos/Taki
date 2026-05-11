@@ -279,6 +279,100 @@ async def batch_download(request: BatchVideoRequest):
 
 
 
+
+# ==================== ENDPOINT PARA DESCARGAR ====================
+
+@app.post("/api/download")
+async def download_video(request: dict):
+    """
+    Proxy para descargar videos usando POST.
+    Esto fuerza la descarga en lugar de reproducción.
+    """
+    try:
+        url = request.get("url")
+        if not url:
+            raise HTTPException(status_code=400, detail="URL no proporcionada")
+        
+        print(f"📥 Descargando video...")
+        
+        # Configurar headers para simular un navegador real
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept": "video/webm,video/mp4,video/*;q=0.9,*/*;q=0.8",
+            "Accept-Language": "es-ES,es;q=0.8,en-US;q=0.5,en;q=0.3",
+            "Accept-Encoding": "gzip, deflate, br",
+            "Connection": "keep-alive",
+            "Sec-Fetch-Dest": "empty",
+            "Sec-Fetch-Mode": "cors",
+            "Sec-Fetch-Site": "cross-site"
+        }
+        
+        async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as client:
+            response = await client.get(url, headers=headers)
+            
+            print(f"✅ Status: {response.status_code}")
+            print(f"✅ Content-Type: {response.headers.get('content-type', 'unknown')}")
+            print(f"✅ Tamaño: {len(response.content)} bytes")
+            
+            if response.status_code != 200:
+                raise Exception(f"Error HTTP {response.status_code}")
+            
+            # Determinar la extensión del archivo
+            content_type = response.headers.get('content-type', '')
+            if 'audio' in content_type:
+                filename = "audio.mp3"
+            elif 'video' in content_type:
+                filename = "video.mp4"
+            else:
+                filename = "download.mp4"
+            
+            # Devolver el archivo forzando la descarga
+            return StreamingResponse(
+                response.iter_bytes(chunk_size=8192),
+                media_type="application/octet-stream",  # Cambiado para forzar descarga
+                headers={
+                    "Content-Disposition": f"attachment; filename={filename}",
+                    "Cache-Control": "no-cache, no-store, must-revalidate",
+                    "Pragma": "no-cache",
+                    "Expires": "0",
+                    "Content-Length": str(len(response.content))
+                }
+            )
+            
+    except httpx.TimeoutException:
+        print("❌ Timeout")
+        raise HTTPException(status_code=408, detail="La descarga tomó demasiado tiempo")
+    except Exception as e:
+        print(f"❌ Error: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
+    """
+    Proxy para descargar videos con headers correctos.
+    Esto fuerza la descarga en lugar de reproducción.
+    """
+    try:
+        # Hacer la petición al video de YouTube
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.get(url, follow_redirects=True)
+            
+            # Determinar el tipo de contenido
+            content_type = response.headers.get('content-type', 'video/mp4')
+            
+            # Devolver el archivo como streaming forzando descarga
+            return StreamingResponse(
+                response.iter_bytes(chunk_size=8192),
+                media_type=content_type,
+                headers={
+                    "Content-Disposition": "attachment",  # Esto fuerza la descarga
+                    "Cache-Control": "no-cache",
+                    "Access-Control-Expose-Headers": "Content-Disposition"
+                }
+            )
+    except Exception as e:
+        print(f"❌ Error en descarga: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+
 # ==================== PARA CORRER LOCALMENTE ====================
 if __name__ == "__main__":
     import uvicorn
