@@ -174,7 +174,7 @@ const VideoInfo = ({ video, onDownload, onAddToHistory }) => {
           </div>
           <p className="progress-hint">La descarga puede tomar unos segundos dependiendo del tamaño del archivo</p>
           <button onClick={handleCancel} className="cancel-btn">
-            ❌ Cancelar descarga
+             Cancelar descarga
           </button>
         </div>
       )}

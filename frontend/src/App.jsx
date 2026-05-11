@@ -3,7 +3,6 @@ import React, { useState } from 'react';
 import UrlInput from './components/UrlInput';
 import VideoInfo from './components/VideoInfo';
 import PlaylistViewer from './components/PlaylistViewer';
-import HistorySidebar from './components/HistorySidebar';
 import ThemeToggle from './components/ThemeToggle';
 import { useHistory } from './hooks/useHistory';
 import { useTheme } from './hooks/useTheme';
@@ -83,14 +82,34 @@ function App() {
     setCurrentUrl(null);
   };
 
+  const formatDate = (dateString) => {
+    const date = new Date(dateString);
+    const now = new Date();
+    const diff = now - date;
+    const minutes = Math.floor(diff / 60000);
+    const hours = Math.floor(diff / 3600000);
+    const days = Math.floor(diff / 86400000);
+    
+    if (minutes < 1) return 'Ahora';
+    if (minutes < 60) return `Hace ${minutes} min`;
+    if (hours < 24) return `Hace ${hours} h`;
+    if (days < 7) return `Hace ${days} d`;
+    return date.toLocaleDateString();
+  };
+
   return (
-    <div className={`app ${theme}`}>
+    <div className={`app ${theme === 'dark' ? 'dark-mode' : ''}`}>
       <header className="app-header">
         <div className="header-left">
-          <h1>📥 YouTube Downloader</h1>
+          <img 
+            src="/TakiLogo.png" 
+            alt="Taki" 
+            className="header-logo"
+            title="Taki - YouTube Downloader"
+          />
           {currentView !== 'idle' && (
-            <button onClick={resetView} className="back-btn" title="Nueva búsqueda">
-              ← Nuevo
+            <button onClick={resetView} className="back-btn" title="Nueva busqueda">
+              Nueva busqueda
             </button>
           )}
         </div>
@@ -108,7 +127,7 @@ function App() {
           {loading && (
             <div className="loading-container">
               <div className="spinner"></div>
-              <p>Obteniendo información...</p>
+              <p>Obteniendo informacion...</p>
             </div>
           )}
 
@@ -127,20 +146,58 @@ function App() {
           )}
         </div>
 
-        <HistorySidebar 
-          history={history}
-          onClear={clearHistory}
-          onSelect={handleHistorySelect}
-          onRemove={removeFromHistory}
-        />
+        {/* Historial en la parte inferior */}
+        <div className="history-section">
+          <div className="history-header">
+            <h3>Historial de descargas</h3>
+            {history.length > 0 && (
+              <button onClick={clearHistory} className="clear-history">
+                Limpiar historial
+              </button>
+            )}
+          </div>
+          
+          {history.length === 0 ? (
+            <div className="history-empty">
+              <p>No hay descargas todavia</p>
+              <p className="empty-subtitle">Tu historial aparecera aqui</p>
+            </div>
+          ) : (
+            <div className="history-list">
+              {history.map((item, index) => (
+                <div key={index} className="history-item">
+                  <div 
+                    className="history-item-content"
+                    onClick={() => handleHistorySelect(item)}
+                  >
+                    <img 
+                      src={item.thumbnail} 
+                      alt={item.title}
+                      className="history-thumbnail"
+                    />
+                    <div className="history-info">
+                      <p className="history-title">{item.title}</p>
+                      <p className="history-date">{formatDate(item.date)}</p>
+                    </div>
+                  </div>
+                  <button 
+                    className="history-remove"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      removeFromHistory(index);
+                    }}
+                  >
+                    x
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
       </main>
 
       <footer className="app-footer">
-        <p>
-          ⚠️ Solo para uso personal. Respeta los derechos de autor.
-          <br />
-          Máximo 10 videos por playlist para garantizar rendimiento.
-        </p>
+        <p>Solo para uso personal. Respeta los derechos de autor.</p>
       </footer>
     </div>
   );
