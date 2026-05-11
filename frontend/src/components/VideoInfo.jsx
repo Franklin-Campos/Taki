@@ -1,5 +1,6 @@
 // src/components/VideoInfo.jsx
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
+import axios from 'axios';
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 
@@ -21,6 +22,7 @@ const VideoInfo = ({ video, onDownload, onAddToHistory }) => {
   const [downloading, setDownloading] = useState(null);
   const [isDownloading, setIsDownloading] = useState(false);
   const [elapsedTime, setElapsedTime] = useState(0);
+  const abortControllerRef = useRef(null);
 
   if (!video) return null;
 
@@ -44,7 +46,17 @@ const VideoInfo = ({ video, onDownload, onAddToHistory }) => {
     return `${secs} seg`;
   };
 
-  const handleDownload = (format) => {
+  const handleCancel = () => {
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+      abortControllerRef.current = null;
+      setDownloading(null);
+      setIsDownloading(false);
+      console.log('🛑 Descarga cancelada por el usuario');
+    }
+  };
+
+  const handleDownload = async (format) => {
     setDownloading(format.quality);
     setIsDownloading(true);
     setElapsedTime(0);
@@ -52,46 +64,87 @@ const VideoInfo = ({ video, onDownload, onAddToHistory }) => {
     const extension = format.ext || (format.quality === 'audio' ? 'mp3' : 'mp4');
     const cleanTitle = video.title.replace(/[<>:"/\\|?*]+/g, '');
     
-    const xhr = new XMLHttpRequest();
-    xhr.open('POST', `${API_URL}/api/download`, true);
-    xhr.setRequestHeader('Content-Type', 'application/json');
-    xhr.responseType = 'blob';
+    // Crear un nuevo AbortController para esta descarga
+    abortControllerRef.current = new AbortController();
     
-    xhr.onload = () => {
-      if (xhr.status === 200) {
-        const blob = xhr.response;
-        const blobUrl = window.URL.createObjectURL(blob);
-        const link = document.createElement('a');
-        link.href = blobUrl;
-        link.download = `${cleanTitle}.${extension}`;
-        document.body.appendChild(link);
-        link.click();
-        document.body.removeChild(link);
-        window.URL.revokeObjectURL(blobUrl);
-        
-        if (onAddToHistory) {
-          onAddToHistory({
-            title: video.title,
-            url: video.url,
-            thumbnail: video.thumbnail
-          });
+    try {
+      // Determinar el tipo de formato solicitado
+      const formatType = format.type === 'audio' ? 'audio' : 'video';
+      const quality = format.quality;
+      
+      // Enviar URL de YouTube + información del formato deseado
+      const response = await axios.post(
+        `${API_URL}/api/download`,
+        {
+          url: video.url,
+          format_type: formatType,
+          quality: quality
+        },
+        {
+          responseType: 'blob',
+          timeout: 300000, // 5 minutos de timeout
+          signal: abortControllerRef.current.signal, // Pasar la señal de cancelación
         }
-        
-        if (onDownload) onDownload(format.quality);
-      } else {
-        alert('Error al descargar el archivo');
+      );
+      
+      // Crear blob y descargar
+      const blob = new Blob([response.data]);
+      const blobUrl = window.URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = blobUrl;
+      link.download = `${cleanTitle}.${extension}`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      window.URL.revokeObjectURL(blobUrl);
+      
+      // Agregar al historial
+      if (onAddToHistory) {
+        onAddToHistory({
+          title: video.title,
+          url: video.url,
+          thumbnail: video.thumbnail
+        });
       }
+      
+      if (onDownload) onDownload(format.quality);
+      
+    } catch (error) {
+      // Si fue cancelado por el usuario, no mostrar error
+      if (axios.isCancel(error)) {
+        console.log('🛑 Descarga cancelada');
+        return;
+      }
+      
+      console.error('Error de descarga:', error);
+      
+      let errorMessage = 'Error al descargar el archivo';
+      
+      if (error.response) {
+        // Error del servidor - intentar leer el mensaje
+        try {
+          const errorText = await error.response.data.text();
+          try {
+            const errorJson = JSON.parse(errorText);
+            errorMessage = errorJson.detail || errorMessage;
+          } catch {
+            errorMessage = errorText || errorMessage;
+          }
+        } catch {
+          errorMessage = `Error del servidor (${error.response.status})`;
+        }
+      } else if (error.code === 'ECONNABORTED') {
+        errorMessage = 'La descarga tardó demasiado tiempo. Intenta con una calidad menor.';
+      } else if (error.request) {
+        errorMessage = 'Error de conexión. Verifica que el servidor esté funcionando.';
+      }
+      
+      alert(errorMessage);
+    } finally {
+      abortControllerRef.current = null;
       setDownloading(null);
       setIsDownloading(false);
-    };
-    
-    xhr.onerror = () => {
-      alert('Error de conexión al servidor');
-      setDownloading(null);
-      setIsDownloading(false);
-    };
-    
-    xhr.send(JSON.stringify({ url: format.url }));
+    }
   };
 
   return (
@@ -109,7 +162,7 @@ const VideoInfo = ({ video, onDownload, onAddToHistory }) => {
         </div>
       </div>
 
-      {/* Barra de progreso indeterminada (animación continua) */}
+      {/* Barra de progreso indeterminada con botón cancelar */}
       {isDownloading && (
         <div className="progress-container">
           <div className="progress-bar-indeterminate">
@@ -120,6 +173,9 @@ const VideoInfo = ({ video, onDownload, onAddToHistory }) => {
             <span className="progress-time">⏱️ {formatTime(elapsedTime)}</span>
           </div>
           <p className="progress-hint">La descarga puede tomar unos segundos dependiendo del tamaño del archivo</p>
+          <button onClick={handleCancel} className="cancel-btn">
+            ❌ Cancelar descarga
+          </button>
         </div>
       )}
 

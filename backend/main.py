@@ -39,6 +39,11 @@ youtube_extractor = YouTubeExtractor()
 class VideoRequest(BaseModel):
     url: str
 
+class DownloadRequest(BaseModel):
+    url: str
+    format_type: Optional[str] = "video"  # "video" o "audio"
+    quality: Optional[str] = "best"  # "144p", "360p", "720p", "audio", etc.
+
 class BatchVideoRequest(BaseModel):
     urls: List[str]
 
@@ -191,74 +196,141 @@ async def batch_download(request: BatchVideoRequest):
     
     return {'results': results}
 
-# ==================== ENDPOINT PARA DESCARGAR (PROXY) ====================
+# ==================== ENDPOINT PARA DESCARGAR (CORREGIDO) ====================
 
 @app.post("/api/download")
-async def download_video(request: dict):
+async def download_video(request: DownloadRequest):
     """
-    Proxy para descargar videos. Recibe la URL y descarga el archivo.
+    Endpoint para descargar videos/audio con streaming eficiente.
+    Recibe URL de YouTube y el formato deseado, obtiene URL directa con yt-dlp y hace streaming.
     """
     try:
-        url = request.get("url")
+        url = request.url
+        format_type = request.format_type  # "video" o "audio"
+        quality = request.quality  # "720p", "480p", "audio", etc.
+        
         if not url:
             raise HTTPException(status_code=400, detail="URL no proporcionada")
         
-        print(f"📥 Descargando video...")
+        # Validar que sea URL de YouTube
+        if not validate_youtube_url(url):
+            raise HTTPException(status_code=400, detail="URL de YouTube inválida")
         
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-            "Accept": "*/*",
-            "Accept-Language": "es-ES,es;q=0.8,en-US;q=0.5,en;q=0.3",
-            "Connection": "keep-alive"
-        }
+        print(f"📥 Iniciando descarga: {url}")
+        print(f"📋 Formato: {format_type} | Calidad: {quality}")
         
-        async with httpx.AsyncClient(timeout=120.0, follow_redirects=True) as client:
-            response = await client.get(url, headers=headers)
+        # Configurar formato según lo solicitado
+        if format_type == "audio":
+            # Solo audio - buscar el mejor formato de audio
+            ydl_opts = {
+                'quiet': True,
+                'no_warnings': True,
+                'format': 'bestaudio/best',
+            }
+        else:
+            # Video con altura específica
+            height = quality.replace('p', '') if quality != 'best' else '720'
+            ydl_opts = {
+                'quiet': True,
+                'no_warnings': True,
+                'format': f'best[height<={height}]',
+            }
+        
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=False)
             
-            print(f"✅ Status: {response.status_code}")
-            print(f"✅ Tamaño: {len(response.content)} bytes")
-            
-            if response.status_code != 200:
-                raise Exception(f"Error HTTP {response.status_code}")
-            
-            # Determinar la extensión
-            content_type = response.headers.get('content-type', '')
-            if 'audio' in content_type:
-                filename = "audio.mp3"
-            elif 'video' in content_type:
-                filename = "video.mp4"
+            if format_type == "audio":
+                # Buscar SOLO formatos de audio puro (sin video)
+                best_format = None
+                for f in info.get('formats', []):
+                    # Audio puro: tiene codec de audio pero NO tiene codec de video
+                    if f.get('acodec') != 'none' and f.get('vcodec') == 'none':
+                        if not best_format or f.get('abr', 0) > best_format.get('abr', 0):
+                            best_format = f
+                
+                # Si no encuentra audio puro, usar el mejor audio disponible
+                if not best_format:
+                    for f in info.get('formats', []):
+                        if f.get('acodec') != 'none':
+                            if not best_format or f.get('abr', 0) > best_format.get('abr', 0):
+                                best_format = f
+                
+                ext = 'mp3'
+                media_type = "audio/mpeg"
             else:
-                filename = "download.mp4"
+                # Buscar formato de video CON audio
+                best_format = None
+                for f in info.get('formats', []):
+                    if f.get('vcodec') != 'none' and f.get('acodec') != 'none':
+                        if not best_format or f.get('height', 0) > best_format.get('height', 0):
+                            best_format = f
+                
+                # Si no hay combinado, buscar solo video
+                if not best_format:
+                    for f in info.get('formats', []):
+                        if f.get('vcodec') != 'none':
+                            if not best_format or f.get('height', 0) > best_format.get('height', 0):
+                                best_format = f
+                
+                ext = best_format.get('ext', 'mp4') if best_format else 'mp4'
+                media_type = f"video/{ext}" if best_format else "video/mp4"
             
-            # Enviar el archivo como streaming
+            if not best_format or not best_format.get('url'):
+                raise HTTPException(status_code=400, detail="No se pudo obtener URL de descarga")
+            
+            direct_url = best_format['url']
+            title = info.get('title', 'video').replace('/', '_').replace('\\', '_')
+            
+            print(f"✅ URL obtenida | Altura: {best_format.get('height', 'audio')} | Ext: {ext}")
+            print(f"✅ Codec video: {best_format.get('vcodec')} | Codec audio: {best_format.get('acodec')}")
+            
+            # Streaming desde la URL directa
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "Accept": "*/*",
+                "Accept-Language": "es-ES,es;q=0.9,en;q=0.8",
+                "Accept-Encoding": "identity",
+                "Connection": "keep-alive",
+            }
+            
+            async def generate():
+                async with httpx.AsyncClient(timeout=300.0, follow_redirects=True) as client:
+                    async with client.stream("GET", direct_url, headers=headers) as response:
+                        if response.status_code != 200:
+                            raise Exception(f"Error al obtener el video: HTTP {response.status_code}")
+                        
+                        async for chunk in response.aiter_bytes(chunk_size=1024 * 1024):
+                            yield chunk
+            
             return StreamingResponse(
-                response.iter_bytes(chunk_size=8192),
-                media_type="application/octet-stream",
+                generate(),
+                media_type=media_type,
                 headers={
-                    "Content-Disposition": f"attachment; filename={filename}",
+                    "Content-Disposition": f'attachment; filename="{title}.{ext}"',
                     "Cache-Control": "no-cache, no-store, must-revalidate",
                     "Pragma": "no-cache",
                     "Expires": "0",
-                    "Content-Length": str(len(response.content))
                 }
             )
             
-    except httpx.TimeoutException:
-        print("❌ Timeout")
-        raise HTTPException(status_code=408, detail="La descarga tomó demasiado tiempo")
+    except HTTPException:
+        raise
+    except yt_dlp.utils.DownloadError as e:
+        print(f"❌ Error de yt-dlp: {e}")
+        raise HTTPException(status_code=400, detail="No se pudo acceder al video. Puede estar restringido o no disponible.")
     except Exception as e:
-        print(f"❌ Error: {e}")
-        raise HTTPException(status_code=400, detail=str(e))
+        print(f"❌ Error en descarga: {e}")
+        raise HTTPException(status_code=500, detail=f"Error interno: {str(e)}")
 
 # ==================== ENDPOINT PARA OBTENER URL DIRECTA ====================
 
 @app.post("/api/get-direct-url")
-async def get_direct_url(request: dict):
+async def get_direct_url(request: VideoRequest):
     """
     Obtiene la URL directa del video sin descargarlo.
     """
     try:
-        url = request.get("url")
+        url = request.url
         if not url:
             raise HTTPException(status_code=400, detail="URL no proporcionada")
         
