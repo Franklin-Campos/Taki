@@ -5,3 +5,4 @@ fastapi==0.104.1          # Framework web moderno y rápido
 uvicorn==0.24.0           # Servidor ASGI para ejecutar FastAPI
 yt-dlp==2023.11.16        # Librería para extraer información de YouTube
 python-multipart==0.0.6   # Necesario para procesar formularios
+httpx==0.25.2
